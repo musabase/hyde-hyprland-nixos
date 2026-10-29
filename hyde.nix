@@ -62,9 +62,32 @@ let
   '';
 
   # 5. Lua for HyDE's Lua scripts (config watcher, battery notify), replacing luarocks.
-  hydeLua = (pkgs.lua5_5 or pkgs.lua5_4).withPackages (ps: pick ps [
+  #    HyDE's shell/activate refuses to start unless a luarocks binary is on PATH,
+  #    so luarocks is installed too (HyDE only checks for it; the rocks come from Nix).
+  luaBase = pkgs.lua5_5 or pkgs.lua5_4;
+  hydeLua = luaBase.withPackages (ps: pick ps [
     "luasec" "luasocket" "argparse" "dkjson" "luafilesystem" "lgi"
   ]);
+  hydeLuarocks = luaBase.pkgs.luarocks or pkgs.luarocks;
+
+  # Oh My Zsh with the three plugins HyDE's zsh config asks for.
+  # nixpkgs' oh-my-zsh is read-only, so the plugins are added in a merged copy.
+  zsh256color = pkgs.writeTextDir "zsh-256color/zsh-256color.plugin.zsh" ''
+    # Stand-in for chrissicool/zsh-256color: upgrade plain terminals to their 256-colour names.
+    case "$TERM" in xterm|screen|tmux) export TERM="$TERM-256color" ;; esac
+  '';
+  hydeOmz = pkgs.runCommand "hyde-oh-my-zsh" { } ''
+    mkdir -p $out
+    cp -rs ${pkgs.oh-my-zsh}/share/oh-my-zsh/. $out/
+    chmod -R u+w $out
+    p=$out/custom/plugins
+    mkdir -p $p/zsh-autosuggestions $p/zsh-syntax-highlighting
+    cp -r ${zsh256color}/zsh-256color $p/
+    echo "source ${pkgs.zsh-autosuggestions}/share/zsh-autosuggestions/zsh-autosuggestions.zsh" \
+      > $p/zsh-autosuggestions/zsh-autosuggestions.plugin.zsh
+    echo "source ${pkgs.zsh-syntax-highlighting}/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh" \
+      > $p/zsh-syntax-highlighting/zsh-syntax-highlighting.plugin.zsh
+  '';
 
   # 6. killall that also matches Nix wrapper names (.waybar-wrapped, .dunst-wrapped).
   #    HyDE restarts waybar, dunst and kitty with plain "killall NAME".
@@ -159,11 +182,21 @@ in
   # ---- Session: Hyprland under UWSM (HyDE starts its services as UWSM units) ----
   programs.hyprland = { enable = true; withUWSM = true; xwayland.enable = true; };
   programs.hyprlock.enable = true;
-  services.displayManager.sddm = { enable = true; wayland.enable = true; theme = "catppuccin-sddm-corners"; };
+  services.displayManager.sddm = {
+    enable = true;
+    wayland.enable = true;
+    theme = "catppuccin-sddm-corners";
+    extraPackages = with pkgs.kdePackages; [ qt5compat qtsvg ];  # the theme imports Qt5Compat.GraphicalEffects
+  };
   services.displayManager.defaultSession = "hyprland-uwsm";
 
   # ---- User and shell ----
-  programs.zsh = { enable = true; enableGlobalCompInit = false; };
+  programs.zsh = {
+    enable = true;
+    enableGlobalCompInit = false;
+    # Oh My Zsh lives in the read-only store, so its cache goes to your home folder.
+    shellInit = ''export ZSH_CACHE_DIR="$HOME/.cache/oh-my-zsh"'';
+  };
   users.users.${hydeUser} = {
     shell = pkgs.zsh;
     extraGroups = [ "networkmanager" "video" "input" ];
@@ -211,7 +244,9 @@ in
     # applications
     firefox kitty kdePackages.dolphin kdePackages.ark vim nwg-displays fastfetch starship
     # HyDE runtimes and custom builds
-    hydePython hydeLua hyprquery hydeDeploy hydeFirstrun
+    hydePython hydeLua hydeLuarocks hyprquery hydeDeploy hydeFirstrun
+    # Note: do not install binutils system-wide. If readelf is on PATH, HyDE inspects the
+    # Hyprland binary for Lua support, and on NixOS that path is a wrapper script.
     (lib.hiPrio killallShim)
   ];
 
@@ -233,7 +268,7 @@ in
     "L+ /usr/libexec/hyprpolkitagent - - - - ${pkgs.hyprpolkitagent}/libexec/hyprpolkitagent"
     "d /usr/share 0755 root root -"
     "L+ /usr/share/wlogout - - - - ${pkgs.wlogout}/share/wlogout"
-    "L+ /usr/share/oh-my-zsh - - - - ${pkgs.oh-my-zsh}/share/oh-my-zsh"
+    "L+ /usr/share/oh-my-zsh - - - - ${hydeOmz}"
     "L+ /usr/share/zsh-theme-powerlevel10k - - - - ${pkgs.zsh-powerlevel10k}/share/zsh-powerlevel10k"
   ];
 
